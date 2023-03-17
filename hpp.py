@@ -18,8 +18,8 @@ def ensure_parent(p):
     if not os.path.exists(parent):
         os.mkdir(parent)
 
-def is_hpp_attr(tag):
-    return any(k.startswith("hpp-") for k in tag.attrs.keys())
+def attr_has_prefix(prefix):
+    return lambda t: any(k.startswith(prefix) for k in t.attrs.keys())
 
 def warn(*args, **kwargs):
     kwargs.setdefault("file", sys.stderr)
@@ -193,25 +193,26 @@ def inflate_hpp(soup, deps, templates, relpath):
 
         for ts in templates[template_name]:
             template_soup = copy.copy(ts)
-            for wg_text in template_soup.find_all("wg-text"):
-                name = wg_text.get("name")
+            for hpp_text in template_soup.find_all("hpp-text"):
+                name = hpp_text.get("name")
                 if name in args:
-                    wg_text.string = (wg_text.string or "") + args[name]
-                    wg_text.unwrap()
+                    hpp_text.string = (hpp_text.string or "") + args[name]
+                    hpp_text.unwrap()
                 else:
                     wg_text.decompose()
 
-            for dynamic_elem in template_soup.find_all(is_hpp_attr):
-                for key in [k for k in dynamic_elem.attrs.keys() if k.startswith("wg-")]:
+            prefix = "hpp-"
+            for dynamic_elem in template_soup.find_all(attr_has_prefix(prefix)):
+                for key in [k for k in dynamic_elem.attrs.keys() if k.startswith(prefix)]:
                     format_str = dynamic_elem[key]
                     del dynamic_elem[key]
-                    attr_name = key[3:]
+                    attr_name = key[len(prefix):]
                     args.didLookup = False
                     new_value = format_str.format_map(args)
                     if not args.didLookup:
                         new_value = args[format_str] if format_str else None
                     if new_value is not None:
-                        dynamic_elem[key[3:]] = new_value
+                        dynamic_elem[key[len(prefix):]] = new_value
 
             hpp.insert_before(inflate_hpp(template_soup, deps, templates, template_name))
 
