@@ -18,8 +18,8 @@ def ensure_parent(p):
     if not os.path.exists(parent):
         os.mkdir(parent)
 
-def is_webgen_attr(tag):
-    return any(k.startswith("wg-") for k in tag.attrs.keys())
+def is_hpp_attr(tag):
+    return any(k.startswith("hpp-") for k in tag.attrs.keys())
 
 def warn(*args, **kwargs):
     kwargs.setdefault("file", sys.stderr)
@@ -75,30 +75,28 @@ class AutoReloader:
     def baseUrl(self):
         return f"http://127.0.0.1:{self.port}"
 
-    def viewingWebgen(self, current_url=None):
+    def viewingLiveSite(self, current_url=None):
         if current_url is None:
             current_url = self.getCurrentUrl()
         return current_url.startswith(self.baseUrl)
 
-    def __call__(self, path):
-        if path.startswith("webgen/"):
-            current_url = self.getCurrentUrl()
-            if not self.viewingWebgen(current_url):
-                return
-            current_url_path = current_url[len(self.baseUrl):]
-            if current_url_path.startswith("/"):
-                current_url_path = current_url_path[1:]
-            if current_url_path.endswith("/"):
-                current_url_path = current_url_path + "index.html"
-            template_path = path[len("webgen/"):]
-            template = os.path.splitext(template_path)[0]
-            deps = self.deps_map.getDepsOfTemplate(template)
-            if len(deps) == 1:
-                self(next(iter(deps)))
-            elif current_url_path in deps:
-                self.reload()
+    def reloadIfNecessary(self, paths):
+        if len(paths) == 1:
+            self(next(iter(paths)))
             return
 
+        current_url = self.getCurrentUrl()
+        if not self.viewingLiveSite(current_url):
+            return
+        current_url_path = current_url[len(self.baseUrl):]
+        if current_url_path.startswith("/"):
+            current_url_path = current_url_path[1:]
+        if current_url_path.endswith("/"):
+            current_url_path = current_url_path + "index.html"
+        if current_url_path in paths:
+            self.reload()
+
+    def __call__(self, path):
         if path[0] != "/":
             path = "/" + path
         head, tail = os.path.split(path)
@@ -117,7 +115,7 @@ end tell
 """)
 
     def reload(self):
-        if not self.viewingWebgen():
+        if not self.viewingLiveSite():
             return
         self.runAppleScript("""tell application "Safari"
 set docUrl to URL of document 1
@@ -174,9 +172,9 @@ def flatten_deps(key, deps, depset=None):
 
     return depset
 
-def inflate_webgen(soup, deps, templates, relpath):
-    for webgen in soup.find_all("webgen"):
-        template_name = webgen.get("template")
+def inflate_hpp(soup, deps, templates, relpath):
+    for hpp in soup.find_all("hpp"):
+        template_name = hpp.get("template")
         if template_name is None:
             warn(f"No template specified in {relpath}, ignoring...")
             continue
@@ -191,7 +189,7 @@ def inflate_webgen(soup, deps, templates, relpath):
         if template_name not in templates:
             warn(f"No template named '{template_name}' in {relpath}, ignoring...")
             continue
-        args = SafeFormatDict(webgen.attrs)
+        args = SafeFormatDict(hpp.attrs)
 
         for ts in templates[template_name]:
             template_soup = copy.copy(ts)
@@ -203,7 +201,7 @@ def inflate_webgen(soup, deps, templates, relpath):
                 else:
                     wg_text.decompose()
 
-            for dynamic_elem in template_soup.find_all(is_webgen_attr):
+            for dynamic_elem in template_soup.find_all(is_hpp_attr):
                 for key in [k for k in dynamic_elem.attrs.keys() if k.startswith("wg-")]:
                     format_str = dynamic_elem[key]
                     del dynamic_elem[key]
@@ -215,9 +213,9 @@ def inflate_webgen(soup, deps, templates, relpath):
                     if new_value is not None:
                         dynamic_elem[key[3:]] = new_value
 
-            webgen.insert_before(inflate_webgen(template_soup, deps, templates, template_name))
+            hpp.insert_before(inflate_hpp(template_soup, deps, templates, template_name))
 
-        webgen.decompose()
+        hpp.decompose()
     return soup
 
 def genhtml(inpath, outpath, templates, inroot, deps_map):
@@ -226,7 +224,7 @@ def genhtml(inpath, outpath, templates, inroot, deps_map):
 
     deps = {}
     with open(inpath) as fp:
-        soup = inflate_webgen(BeautifulSoup(fp, "html.parser"), deps, templates, relpath)
+        soup = inflate_hpp(BeautifulSoup(fp, "html.parser"), deps, templates, relpath)
     deps_map[relpath] = flatten_deps(relpath, deps)
 
     ensure_parent(outpath)
@@ -259,9 +257,13 @@ def process_file(filepath, dest_filepath, templates, in_dir, deps_map):
     else:
         genhtml(filepath, dest_filepath, templates, in_dir, deps_map)
 
+def is_subdir(base, s):
+    return os.path.commonpath([base, s]) == base
+
 def main(args):
     parser = argparse.ArgumentParser()
     parser.add_argument("--in-dir", default="site", help="Specify the directory containing the input files to be copied/processed into --out-dir")
+    parser.add_argument("--templates", default="{in_dir}/hpp", help="Specify the directory containing templates")
     parser.add_argument("--out-dir", default="sitegen", help="Specify the output directory. All files from --in-dir will be copied/processed into this directory")
     parser.add_argument("--listen", default=False, action="store_true", help="If specified, stay alive & process files as they change")
     parser.add_argument("--clean", default=False, action="store_true", help="If specified, cleans the out directory before starting")
@@ -271,24 +273,25 @@ def main(args):
     parsed_args = parser.parse_args()
     in_dir = os.path.abspath(parsed_args.in_dir)
     out_dir = os.path.abspath(parsed_args.out_dir)
+    templates_dir = os.path.abspath(parsed_args.in_dir.format(in_dir=in_dir)).rstrip("/")
 
     if parsed_args.clean:
         if os.path.exists(out_dir):
             shutil.rmtree(out_dir, ignore_errors=True)
 
-    webgen_dir = os.path.join(in_dir, "webgen")
     templates = {
-        os.path.splitext(template)[0]: load_template(os.path.join(webgen_dir, template))
-        for template in os.listdir(webgen_dir)
+        os.path.splitext(template)[0]: load_template(os.path.join(templates_dir, template))
+        for template in os.listdir(templates_dir)
     }
     templates = {k: v for k, v in templates.items() if v is not None}
 
     deps_map = DepsMap()
 
+    templates_parent, templates_tail = os.path.split(templates_dir)
+
     for root, dirs, files in os.walk(in_dir):
-        if root == in_dir:
-            if "webgen" in dirs:
-                dirs.remove("webgen")
+        if root == templates_parent and templates_tail in dirs:
+            dirs.remove(templates_tail)
         for file in files:
             filepath = os.path.join(root, file)
             rel_filepath = os.path.relpath(filepath, in_dir)
@@ -297,14 +300,15 @@ def main(args):
 
     if parsed_args.listen:
         from watchdog import events as wd_events
+        from watchdog.events import FileSystemMovedEvent, DirDeletedEvent, FileDeletedEvent
         from watchdog.observers.fsevents import FSEventsObserver as Observer
 
         autoreloader = AutoReloader(parsed_args.autoreload, parsed_args.port, deps_map)
 
-        class WebGenEventHandler(wd_events.FileSystemEventHandler):
-            def __init__(self, in_dir, out_dir, templates, deps_map):
+        class LiveSiteEventHandler(wd_events.FileSystemEventHandler):
+            def __init__(self, in_dir, out_dir, templates, templates_dir, deps_map):
                 self.in_dir = in_dir
-                self.webgen_dir = os.path.join(in_dir, "webgen")
+                self.templates_dir = templates_dir
                 self.out_dir = out_dir
                 self.templates = templates
                 self.deps_map = deps_map
@@ -314,15 +318,19 @@ def main(args):
                     return
 
                 processed_template = False
-                if isinstance(event, wd_events.FileSystemMovedEvent):
-                    if os.path.commonpath([self.webgen_dir, event.dest_path]) == self.webgen_dir:
+                if isinstance(event, FileSystemMovedEvent):
+                    if is_subdir(self.templates_dir, event.dest_path):
                         if event.dest_path.endswith(".html"):
                             self.process_template(event.dest_path)
                             processed_template = True
-                    if os.path.commonpath([self.webgen_dir, event.src_path]) == self.webgen_dir:
+                    if is_subdir(self.templates_dir, event.src_path):
                         if event.src_path.endswith(".html"):
                             self.drop_template(event.src_path)
-                elif os.path.commonpath([self.webgen_dir, event.src_path]) == self.webgen_dir:
+                elif isinstance(event, DirDeletedEvent) or isinstance(event, FileDeletedEvent):
+                    if is_subdir(self.templates_dir, event.src_path):
+                        self.drop_template(event.src_path)
+                        processed_template = True
+                elif is_subdir(self.templates_dir, event.src_path):
                     if event.src_path.endswith(".html"):
                         self.process_template(event.src_path)
                         processed_template = True
@@ -335,22 +343,24 @@ def main(args):
                 except Exception:
                     traceback.print_exc()
 
-            def drop_template(self, webgen_path):
-                template_path = os.path.relpath(webgen_path, self.webgen_dir)
+            def drop_template(self, template_path):
+                template_path = os.path.relpath(template_path, self.templates_dir)
                 template = os.path.splitext(template_path)[0]
                 print(f"= Updating Deps for {template}")
                 for dep in deps_map.removeTemplate(template):
                     process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map)
 
-            def process_template(self, webgen_path):
-                template_path = os.path.relpath(webgen_path, self.webgen_dir)
+            def process_template(self, template_path):
+                template_path = os.path.relpath(template_path, self.templates_dir)
                 template = os.path.splitext(template_path)[0]
-                new_temp = load_template(webgen_path)
+                new_temp = load_template(template_path)
                 if new_temp is not None:
                     self.templates[template] = new_temp
                 print(f"= Updating Deps for {template}")
-                for dep in deps_map.getDepsOfTemplate(template):
+                deps = deps_map.getDepsOfTemplate(template)
+                for dep in deps:
                     process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map)
+                autoreloader.reloadIfNecessary(deps)
 
             def on_created(self, event):
                 #print(f"[Created] {event.src_path}")
@@ -386,14 +396,19 @@ def main(args):
             def on_modified_path(self, path):
                 if os.path.isdir(path):
                     return
+                if is_subdir(self.templates_dir, path):
+                    warn(f"Didn't expect template path: {path}")
+                    return
                 rel = os.path.relpath(path, self.in_dir)
                 process_file(path, os.path.join(self.out_dir, rel), self.templates, self.in_dir, self.deps_map)
                 autoreloader(rel)
 
-        event_handler = WebGenEventHandler(in_dir, out_dir, templates, deps_map)
+        event_handler = LiveSiteEventHandler(in_dir, out_dir, templates, templates_dir, deps_map)
 
         observer = Observer()
         observer.schedule(event_handler, in_dir, recursive=True)
+        if not is_subdir(in_dir, templates_dir):
+            observer.schedule(event_handler, templates_dir, recursive=True)
         observer.start()
         try:
             os.chdir(out_dir)
