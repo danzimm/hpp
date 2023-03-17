@@ -273,7 +273,7 @@ def main(args):
     parsed_args = parser.parse_args()
     in_dir = os.path.abspath(parsed_args.in_dir)
     out_dir = os.path.abspath(parsed_args.out_dir)
-    templates_dir = os.path.abspath(parsed_args.in_dir.format(in_dir=in_dir)).rstrip("/")
+    templates_dir = os.path.abspath(parsed_args.templates.format(in_dir=in_dir)).rstrip("/")
 
     if parsed_args.clean:
         if os.path.exists(out_dir):
