@@ -119,7 +119,7 @@ class AutoReloader:
     def open(self, url_path):
         if self.viewingLiveSite():
             self.runAppleScript(f"""tell application "Safari"
-set docUrl to URL "http://127.0.0.1:{self.port}{url_path}"
+set docUrl to "http://127.0.0.1:{self.port}{url_path}"
 set URL of document 1 to docURL
 end tell""")
         else:
