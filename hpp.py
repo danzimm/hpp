@@ -148,15 +148,21 @@ end tell""")
   end tell
 end run""", return_stdout=True).strip()
 
-    def runAppleScript(self, script, return_stdout=False):
+    def runAppleScript(self, script, return_stdout=False, open_window_on_fail=True):
         if not self.enabled:
             return ""
         try:
             cp = subprocess.run(["osascript", "-e", script], check=True, capture_output=return_stdout, text=True if return_stdout else None)
-            if return_stdout:
-                return cp.stdout
+            return cp.stdout if return_stdout else ""
         except subprocess.CalledProcessError as exc:
             warn(f"Failed to run {script}: {exc}")
+            if open_window_on_fail:
+                self.runAppleScript("""tell application "Safari"
+if (count documents) is 0 then make new document
+end tell""", open_window_on_fail=False)
+                return self.runAppleScript(script, return_stdout=return_stdout, open_window_on_fail=False)
+            else:
+                return ""
 
 class DepNode:
     def __init__(self, name, parent = None, **kwargs):
