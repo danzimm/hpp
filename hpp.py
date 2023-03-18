@@ -117,9 +117,18 @@ class AutoReloader:
             self.open("/")
 
     def open(self, url_path):
-        self.runAppleScript(f"""tell application "Safari"
-set docURL to "http://127.0.0.1:{self.port}{url_path}"
+        if self.viewingLiveSite():
+            self.runAppleScript(f"""tell application "Safari"
+set docUrl to URL "http://127.0.0.1:{self.port}{url_path}"
 set URL of document 1 to docURL
+end tell""")
+        else:
+            self.runAppleScript(f"""tell application "Safari"
+tell window 1
+set newTab to (make new tab)
+set URL of newTab to "http://127.0.0.1:{self.port}{url_path}"
+set current tab to newTab
+end tell
 end tell
 """)
 
@@ -222,7 +231,7 @@ def inflate_hpp(soup, deps, templates, relpath):
                     args.didLookup = False
                     new_value = format_str.format_map(args)
                     if not args.didLookup:
-                        new_value = args[format_str] if format_str else None
+                        new_value = args.get(format_str, None)
                     if new_value is not None:
                         dynamic_elem[key[len(prefix):]] = new_value
 
