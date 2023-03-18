@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from threading import Thread
 import time
 import traceback
 
@@ -68,9 +69,6 @@ class AutoReloader:
         self.port = port
         self.deps_map = deps_map
 
-    def didNavigate(self, navigated):
-        pass
-
     @property
     def baseUrl(self):
         return f"http://127.0.0.1:{self.port}"
@@ -81,6 +79,9 @@ class AutoReloader:
         return current_url.startswith(self.baseUrl)
 
     def reloadIfNecessary(self, paths):
+        if not self.enabled:
+            return
+
         if len(paths) == 1:
             self(next(iter(paths)))
             return
@@ -97,6 +98,9 @@ class AutoReloader:
             self.reload()
 
     def __call__(self, path):
+        if not self.enabled:
+            return
+
         if path[0] != "/":
             path = "/" + path
         head, tail = os.path.split(path)
@@ -107,6 +111,11 @@ class AutoReloader:
             if ext[1:] in ("svg", "css", "ico"):
                 self.reload()
 
+    def openAfterDelay(self, delay):
+        time.sleep(delay)
+        if not self.reload():
+            self.open("/")
+
     def open(self, url_path):
         self.runAppleScript(f"""tell application "Safari"
 set docURL to "http://127.0.0.1:{self.port}{url_path}"
@@ -116,11 +125,12 @@ end tell
 
     def reload(self):
         if not self.viewingLiveSite():
-            return
+            return False
         self.runAppleScript("""tell application "Safari"
 set docUrl to URL of document 1
 set URL of document 1 to docURL
 end tell""")
+        return True
 
     def getCurrentUrl(self):
         return self.runAppleScript("""on run
@@ -130,6 +140,8 @@ end tell""")
 end run""", return_stdout=True).strip()
 
     def runAppleScript(self, script, return_stdout=False):
+        if not self.enabled:
+            return ""
         try:
             cp = subprocess.run(["osascript", "-e", script], check=True, capture_output=return_stdout, text=True if return_stdout else None)
             if return_stdout:
@@ -413,6 +425,7 @@ def main(args):
         observer.start()
         try:
             os.chdir(out_dir)
+            Thread(target=autoreloader.openAfterDelay, args=[0.1]).run()
             test(SimpleHTTPRequestHandler, port=parsed_args.port)
         finally:
             observer.stop()
