@@ -341,8 +341,9 @@ def main(args):
                             self.drop_template(event.src_path)
                 elif isinstance(event, DirDeletedEvent) or isinstance(event, FileDeletedEvent):
                     if is_subdir(self.templates_dir, event.src_path):
-                        self.drop_template(event.src_path)
-                        processed_template = True
+                        if event.src_path.endswith(".html"):
+                            self.drop_template(event.src_path)
+                            processed_template = True
                 elif is_subdir(self.templates_dir, event.src_path):
                     if event.src_path.endswith(".html"):
                         self.process_template(event.src_path)
@@ -364,8 +365,8 @@ def main(args):
                     process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map)
 
             def process_template(self, template_path):
-                template_path = os.path.relpath(template_path, self.templates_dir)
-                template = os.path.splitext(template_path)[0]
+                template_relpath = os.path.relpath(template_path, self.templates_dir)
+                template = os.path.splitext(template_relpath)[0]
                 new_temp = load_template(template_path)
                 if new_temp is not None:
                     self.templates[template] = new_temp
@@ -410,7 +411,6 @@ def main(args):
                 if os.path.isdir(path):
                     return
                 if is_subdir(self.templates_dir, path):
-                    warn(f"Didn't expect template path: {path}")
                     return
                 rel = os.path.relpath(path, self.in_dir)
                 process_file(path, os.path.join(self.out_dir, rel), self.templates, self.in_dir, self.deps_map)
