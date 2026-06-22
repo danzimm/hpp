@@ -4,6 +4,7 @@ import argparse
 import copy
 import os
 import shutil
+import string
 import subprocess
 import sys
 from threading import Thread
@@ -184,6 +185,27 @@ def flatten_deps(key, deps, depset=None):
 
     return depset
 
+def field_name_root(field_name):
+    return field_name.split(".", 1)[0].split("[", 1)[0]
+
+def format_hpp_text(format_str, args):
+    try:
+        parsed_format = list(string.Formatter().parse(format_str))
+    except ValueError:
+        return None
+
+    if not any(field_name for _, field_name, _, _ in parsed_format):
+        return None
+
+    text_parts = []
+    for literal_text, field_name, default_value, _ in parsed_format:
+        text_parts.append(literal_text)
+        if field_name is None:
+            continue
+        arg_name = field_name_root(field_name)
+        text_parts.append(args[arg_name] if arg_name in args else default_value)
+    return "".join(text_parts)
+
 def inflate_hpp(soup, deps, templates, relpath):
     for hpp in soup.find_all("hpp"):
         template_name = hpp.get("template")
@@ -205,13 +227,20 @@ def inflate_hpp(soup, deps, templates, relpath):
 
         for ts in templates[template_name]:
             template_soup = copy.copy(ts)
-            for hpp_text in template_soup.find_all("hpp-text"):
-                name = hpp_text.get("name")
+            for dynamic_text_elem in template_soup.find_all("hpp-text"):
+                name = dynamic_text_elem.get("name")
                 if name in args:
-                    hpp_text.string = (hpp_text.string or "") + args[name]
-                    hpp_text.unwrap()
+                    dynamic_text_elem.string = (dynamic_text_elem.string or "") + args[name]
+                    dynamic_text_elem.unwrap()
                 else:
-                    hpp_text.decompose()
+                    dynamic_text_elem.decompose()
+
+            for dynamic_text_elem in template_soup.find_all(attrs={"hpp-text": True}):
+                format_str = dynamic_text_elem.get("hpp-text")
+                del dynamic_text_elem["hpp-text"]
+                new_text = format_hpp_text(format_str, args)
+                if new_text is not None:
+                    dynamic_text_elem.string = new_text
 
             prefix = "hpp-"
             for dynamic_elem in template_soup.find_all(attr_has_prefix(prefix)):
