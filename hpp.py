@@ -246,13 +246,47 @@ def inflate_hpp(soup, deps, templates, relpath):
         hpp.decompose()
     return soup
 
-def genhtml(inpath, outpath, templates, inroot, deps_map):
+def rewrite_root_relative_urls(soup, url_prefix):
+    if not url_prefix:
+        return
+
+    url_prefix = url_prefix.strip("/")
+    if not url_prefix:
+        return
+    url_prefix = "/" + url_prefix
+
+    def rewrite_url(url):
+        if not url or not url.startswith("/") or url.startswith("//"):
+            return url
+        if url == url_prefix or url.startswith(url_prefix + "/"):
+            return url
+        return url_prefix + url
+
+    def rewrite_srcset(srcset):
+        rewritten_sources = []
+        for source in srcset.split(","):
+            parts = source.strip().split(None, 1)
+            if not parts:
+                continue
+            parts[0] = rewrite_url(parts[0])
+            rewritten_sources.append(" ".join(parts))
+        return ", ".join(rewritten_sources)
+
+    for tag in soup.find_all(True):
+        for attr in ("href", "src"):
+            if attr in tag.attrs:
+                tag.attrs[attr] = rewrite_url(tag.attrs[attr])
+        if "srcset" in tag.attrs:
+            tag.attrs["srcset"] = rewrite_srcset(tag.attrs["srcset"])
+
+def genhtml(inpath, outpath, templates, inroot, deps_map, url_prefix=""):
     relpath = os.path.relpath(inpath, inroot)
     print(f"= Processing {relpath}")
 
     deps = {}
     with open(inpath) as fp:
         soup = inflate_hpp(BeautifulSoup(fp, "html.parser"), deps, templates, relpath)
+    rewrite_root_relative_urls(soup, url_prefix)
     deps_map[relpath] = flatten_deps(relpath, deps)
 
     ensure_parent(outpath)
@@ -277,13 +311,13 @@ def copyfile(src, dst, **kwargs):
     print(f"* Copying {src} -> {dst}")
     shutil.copyfile(src, dst, **kwargs)
 
-def process_file(filepath, dest_filepath, templates, in_dir, deps_map):
+def process_file(filepath, dest_filepath, templates, in_dir, deps_map, url_prefix=""):
     if not os.path.exists(filepath):
         return
     if not filepath.endswith("html"):
         copyfile(filepath, dest_filepath)
     else:
-        genhtml(filepath, dest_filepath, templates, in_dir, deps_map)
+        genhtml(filepath, dest_filepath, templates, in_dir, deps_map, url_prefix)
 
 def is_subdir(base, s):
     return os.path.commonpath([base, s]) == base
@@ -297,6 +331,7 @@ def main(args):
     parser.add_argument("--clean", default=False, action="store_true", help="If specified, cleans the out directory before starting")
     parser.add_argument("--port", default=8000, type=int, help="Specify the port to listen to when --listen is specified")
     parser.add_argument("--autoreload", default=False, action="store_true", help="Auto reload/navigate to the webpage that was last edited")
+    parser.add_argument("--url-prefix", default="", help="Prefix root-relative HTML href/src/srcset URLs, e.g. /project for GitHub project Pages")
 
     parsed_args = parser.parse_args()
     in_dir = os.path.abspath(parsed_args.in_dir)
@@ -324,7 +359,7 @@ def main(args):
             filepath = os.path.join(root, file)
             rel_filepath = os.path.relpath(filepath, in_dir)
             dest_filepath = os.path.join(out_dir, rel_filepath)
-            process_file(filepath, dest_filepath, templates, in_dir, deps_map)
+            process_file(filepath, dest_filepath, templates, in_dir, deps_map, parsed_args.url_prefix)
 
     if parsed_args.listen:
         from watchdog import events as wd_events
@@ -334,12 +369,13 @@ def main(args):
         autoreloader = AutoReloader(parsed_args.autoreload, parsed_args.port, deps_map)
 
         class LiveSiteEventHandler(wd_events.FileSystemEventHandler):
-            def __init__(self, in_dir, out_dir, templates, templates_dir, deps_map):
+            def __init__(self, in_dir, out_dir, templates, templates_dir, deps_map, url_prefix):
                 self.in_dir = in_dir
                 self.templates_dir = templates_dir
                 self.out_dir = out_dir
                 self.templates = templates
                 self.deps_map = deps_map
+                self.url_prefix = url_prefix
 
             def dispatch(self, event):
                 if event.is_directory:
@@ -377,7 +413,7 @@ def main(args):
                 template = os.path.splitext(template_path)[0]
                 print(f"= Updating Deps for {template}")
                 for dep in deps_map.removeTemplate(template):
-                    process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map)
+                    process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map, self.url_prefix)
 
             def process_template(self, template_path):
                 template_relpath = os.path.relpath(template_path, self.templates_dir)
@@ -388,7 +424,7 @@ def main(args):
                 print(f"= Updating Deps for {template}")
                 deps = deps_map.getDepsOfTemplate(template)
                 for dep in deps:
-                    process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map)
+                    process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map, self.url_prefix)
                 autoreloader.reloadIfNecessary(deps)
 
             def on_created(self, event):
@@ -428,10 +464,10 @@ def main(args):
                 if is_subdir(self.templates_dir, path):
                     return
                 rel = os.path.relpath(path, self.in_dir)
-                process_file(path, os.path.join(self.out_dir, rel), self.templates, self.in_dir, self.deps_map)
+                process_file(path, os.path.join(self.out_dir, rel), self.templates, self.in_dir, self.deps_map, self.url_prefix)
                 autoreloader(rel)
 
-        event_handler = LiveSiteEventHandler(in_dir, out_dir, templates, templates_dir, deps_map)
+        event_handler = LiveSiteEventHandler(in_dir, out_dir, templates, templates_dir, deps_map, parsed_args.url_prefix)
 
         observer = Observer()
         observer.schedule(event_handler, in_dir, recursive=True)
