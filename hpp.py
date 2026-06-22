@@ -211,7 +211,7 @@ def inflate_hpp(soup, deps, templates, relpath):
                     hpp_text.string = (hpp_text.string or "") + args[name]
                     hpp_text.unwrap()
                 else:
-                    wg_text.decompose()
+                    hpp_text.decompose()
 
             prefix = "hpp-"
             for dynamic_elem in template_soup.find_all(attr_has_prefix(prefix)):
