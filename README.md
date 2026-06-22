@@ -7,3 +7,5 @@ I didn't like how complex all the website preprocessing systems were, so I made 
 Oh, also this is in plain python with minimal deps (BeautifulSoup and optionally watchdog if you want to leverage the `--listen` option).
 
 Speaking of the `--listen` option: the tool also allows you to spin up a webserver which will automatically process file changes as you make them so you don't need to manually re-run the preprocessor.
+
+For project-hosted sites, such as GitHub Pages repositories served below `/<repo>/`, pass `--url-prefix /<repo>` to prefix root-relative `href`, `src`, and `srcset` URLs in generated HTML.
