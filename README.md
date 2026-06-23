@@ -9,3 +9,13 @@ Oh, also this is in plain python with minimal deps (BeautifulSoup and optionally
 Speaking of the `--listen` option: the tool also allows you to spin up a webserver which will automatically process file changes as you make them so you don't need to manually re-run the preprocessor.
 
 For project-hosted sites, such as GitHub Pages repositories served below `/<repo>/`, pass `--url-prefix /<repo>` to prefix root-relative `href`, `src`, and `srcset` URLs in generated HTML.
+
+`--in-dir` and `--templates` can both be passed multiple times. Later directories override earlier ones, which lets a site use a shared theme as a base and then layer local pages, assets, and templates on top:
+
+```sh
+python3 hpp/hpp.py \
+  --in-dir theme/site \
+  --in-dir site
+```
+
+By default, this also loads templates from each input directory's `hpp/` directory in the same order. Pass `--templates` explicitly when you want a different template overlay.

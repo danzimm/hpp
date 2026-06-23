@@ -18,7 +18,7 @@ from http.server import test, SimpleHTTPRequestHandler
 def ensure_parent(p):
     parent = os.path.dirname(p)
     if not os.path.exists(parent):
-        os.mkdir(parent)
+        os.makedirs(parent, exist_ok=True)
 
 def attr_has_prefix(prefix):
     return lambda t: any(k.startswith(prefix) for k in t.attrs.keys())
@@ -362,6 +362,34 @@ def template_source_root(template_path, template_dirs):
             return template_dir
     return None
 
+def source_root(path, in_dirs):
+    for in_dir in sorted(in_dirs, key=len, reverse=True):
+        if is_subdir(in_dir, path):
+            return in_dir
+    return None
+
+def overlay_file(relpath, in_dirs):
+    for in_dir in reversed(in_dirs):
+        path = os.path.join(in_dir, relpath)
+        if os.path.exists(path):
+            return path, in_dir
+    return None, None
+
+def iter_overlay_files(in_dirs, template_dirs):
+    overlay = {}
+    template_dirs_set = set(template_dirs)
+    for in_dir in in_dirs:
+        for root, dirs, files in os.walk(in_dir):
+            dirs[:] = [
+                d for d in dirs
+                if os.path.abspath(os.path.join(root, d)).rstrip("/") not in template_dirs_set
+            ]
+            for file in files:
+                filepath = os.path.join(root, file)
+                rel_filepath = os.path.relpath(filepath, in_dir)
+                overlay[rel_filepath] = (filepath, in_dir)
+    return overlay
+
 def copyfile(src, dst, **kwargs):
     ensure_parent(dst)
     print(f"* Copying {src} -> {dst}")
@@ -375,16 +403,28 @@ def process_file(filepath, dest_filepath, templates, in_dir, deps_map, url_prefi
     else:
         genhtml(filepath, dest_filepath, templates, in_dir, deps_map, url_prefix)
 
+def process_relpath(relpath, in_dirs, out_dir, templates, deps_map, url_prefix=""):
+    filepath, in_dir = overlay_file(relpath, in_dirs)
+    if filepath is None:
+        return False
+    process_file(filepath, os.path.join(out_dir, relpath), templates, in_dir, deps_map, url_prefix)
+    return True
+
 def is_subdir(base, s):
     return os.path.commonpath([base, s]) == base
 
 def main(args):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--in-dir", default="site", help="Specify the directory containing the input files to be copied/processed into --out-dir")
+    parser.add_argument(
+        "--in-dir",
+        action="append",
+        default=None,
+        help="Specify directories containing input files. Can be passed multiple times; later values override earlier ones."
+    )
     parser.add_argument(
         "--templates",
         action="append",
-        default=["{in_dir}/hpp"],
+        default=None,
         help="Specify directories containing templates. Can be passed multiple times; later values override earlier ones."
     )
     parser.add_argument("--out-dir", default="sitegen", help="Specify the output directory. All files from --in-dir will be copied/processed into this directory")
@@ -395,12 +435,22 @@ def main(args):
     parser.add_argument("--url-prefix", default="", help="Prefix root-relative HTML href/src/srcset URLs, e.g. /project for GitHub project Pages")
 
     parsed_args = parser.parse_args()
-    in_dir = os.path.abspath(parsed_args.in_dir)
+    parsed_in_dirs = parsed_args.in_dir if parsed_args.in_dir is not None else ["site"]
+    in_dirs = [os.path.abspath(in_dir).rstrip("/") for in_dir in parsed_in_dirs]
+    in_dir = in_dirs[-1]
     out_dir = os.path.abspath(parsed_args.out_dir)
-    templates_dirs = [
-        os.path.abspath(templates_arg.format(in_dir=in_dir)).rstrip("/")
-        for templates_arg in parsed_args.templates
-    ]
+    if parsed_args.templates is None:
+        templates_dirs = [os.path.join(in_dir, "hpp") for in_dir in in_dirs]
+    else:
+        templates_dirs = []
+        for templates_arg in parsed_args.templates:
+            if "{in_dir}" in templates_arg:
+                templates_dirs.extend(
+                    os.path.abspath(templates_arg.format(in_dir=in_dir)).rstrip("/")
+                    for in_dir in in_dirs
+                )
+            else:
+                templates_dirs.append(os.path.abspath(templates_arg).rstrip("/"))
 
     if parsed_args.clean:
         if os.path.exists(out_dir):
@@ -408,20 +458,12 @@ def main(args):
 
     templates, _ = load_templates(templates_dirs)
     templates = {k: v for k, v in templates.items() if v is not None}
-    template_dirs_set = set(templates_dirs)
 
     deps_map = DepsMap()
 
-    for root, dirs, files in os.walk(in_dir):
-        dirs[:] = [
-            d for d in dirs
-            if os.path.abspath(os.path.join(root, d)).rstrip("/") not in template_dirs_set
-        ]
-        for file in files:
-            filepath = os.path.join(root, file)
-            rel_filepath = os.path.relpath(filepath, in_dir)
-            dest_filepath = os.path.join(out_dir, rel_filepath)
-            process_file(filepath, dest_filepath, templates, in_dir, deps_map, parsed_args.url_prefix)
+    for rel_filepath, (filepath, in_dir) in iter_overlay_files(in_dirs, templates_dirs).items():
+        dest_filepath = os.path.join(out_dir, rel_filepath)
+        process_file(filepath, dest_filepath, templates, in_dir, deps_map, parsed_args.url_prefix)
 
     if parsed_args.listen:
         from watchdog import events as wd_events
@@ -431,8 +473,8 @@ def main(args):
         autoreloader = AutoReloader(parsed_args.autoreload, parsed_args.port, deps_map)
 
         class LiveSiteEventHandler(wd_events.FileSystemEventHandler):
-            def __init__(self, in_dir, out_dir, templates, templates_dirs, deps_map, url_prefix):
-                self.in_dir = in_dir
+            def __init__(self, in_dirs, out_dir, templates, templates_dirs, deps_map, url_prefix):
+                self.in_dirs = in_dirs
                 self.out_dir = out_dir
                 self.templates = templates
                 self.templates_dirs = templates_dirs
@@ -477,7 +519,7 @@ def main(args):
                 self.refresh_templates()
                 print(f"= Updating Deps for {template}")
                 for dep in self.deps_map.removeTemplate(template):
-                    process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map, self.url_prefix)
+                    process_relpath(dep, self.in_dirs, self.out_dir, self.templates, self.deps_map, self.url_prefix)
 
             def process_template(self, template_path):
                 template = os.path.splitext(os.path.basename(template_path))[0]
@@ -485,7 +527,7 @@ def main(args):
                 print(f"= Updating Deps for {template}")
                 deps = self.deps_map.getDepsOfTemplate(template)
                 for dep in deps:
-                    process_file(os.path.join(self.in_dir, dep), os.path.join(self.out_dir, dep), self.templates, self.in_dir, self.deps_map, self.url_prefix)
+                    process_relpath(dep, self.in_dirs, self.out_dir, self.templates, self.deps_map, self.url_prefix)
                 autoreloader.reloadIfNecessary(deps)
 
             def on_created(self, event):
@@ -509,7 +551,13 @@ def main(args):
                 self.on_modified_path(path)
 
             def on_deleted_path(self, path):
-                rel = os.path.relpath(path, self.in_dir)
+                in_dir = source_root(path, self.in_dirs)
+                if in_dir is None:
+                    return
+                rel = os.path.relpath(path, in_dir)
+                if process_relpath(rel, self.in_dirs, self.out_dir, self.templates, self.deps_map, self.url_prefix):
+                    autoreloader(rel)
+                    return
                 out_path = os.path.join(self.out_dir, rel)
                 if not os.path.exists(out_path):
                     return
@@ -524,16 +572,20 @@ def main(args):
                     return
                 if template_source_root(path, self.templates_dirs) is not None:
                     return
-                rel = os.path.relpath(path, self.in_dir)
-                process_file(path, os.path.join(self.out_dir, rel), self.templates, self.in_dir, self.deps_map, self.url_prefix)
+                in_dir = source_root(path, self.in_dirs)
+                if in_dir is None:
+                    return
+                rel = os.path.relpath(path, in_dir)
+                process_relpath(rel, self.in_dirs, self.out_dir, self.templates, self.deps_map, self.url_prefix)
                 autoreloader(rel)
 
-        event_handler = LiveSiteEventHandler(in_dir, out_dir, templates, templates_dirs, deps_map, parsed_args.url_prefix)
+        event_handler = LiveSiteEventHandler(in_dirs, out_dir, templates, templates_dirs, deps_map, parsed_args.url_prefix)
 
         observer = Observer()
-        observer.schedule(event_handler, in_dir, recursive=True)
+        for in_dir in in_dirs:
+            observer.schedule(event_handler, in_dir, recursive=True)
         for templates_dir in templates_dirs:
-            if not is_subdir(in_dir, templates_dir):
+            if not any(is_subdir(in_dir, templates_dir) for in_dir in in_dirs):
                 observer.schedule(event_handler, templates_dir, recursive=True)
         observer.start()
         try:
