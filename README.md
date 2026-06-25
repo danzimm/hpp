@@ -38,3 +38,27 @@ Templates can also conditionally set attributes:
 ```
 
 The supported expression forms are `name`, `!name`, `name == name`, `name != name`, `name == "literal"`, and `name != "literal"`. Missing values, empty strings, `false`, `0`, and `no` are treated as false.
+
+## Slots
+
+Templates can expose named slots for caller-provided markup:
+
+```html
+<!-- hpp/panel.html -->
+<section>
+  <h1 hpp-text="{title}"></h1>
+  <hpp-slot name="body" />
+</section>
+```
+
+Callers fill slots with matching `<hpp-slot>` children:
+
+```html
+<hpp template="panel" title="Hello">
+  <hpp-slot name="body">
+    <p>Panel body</p>
+  </hpp-slot>
+</hpp>
+```
+
+Missing slots are removed. Slotted content is expanded with the template call's arguments, and nested `<hpp>` calls inherit parent arguments unless they override them explicitly.

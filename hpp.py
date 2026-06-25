@@ -250,6 +250,13 @@ def format_hpp_value(value, args):
     new_value = format_hpp_text(value, args)
     return value if new_value is None else new_value
 
+def build_hpp_args(hpp, inherited_args=None):
+    args = SafeFormatDict(inherited_args or {})
+    inherited_scope = SafeFormatDict(args)
+    for key, value in hpp.attrs.items():
+        args[key] = format_hpp_value(value, inherited_scope)
+    return args
+
 def add_class(elem, class_name):
     existing = elem.get("class", [])
     if isinstance(existing, str):
@@ -266,6 +273,11 @@ def iter_tags(elem):
     if isinstance(elem, Tag):
         yield elem
     yield from elem.find_all(True)
+
+def iter_hpp_tags(elem):
+    if isinstance(elem, Tag) and elem.name == "hpp":
+        yield elem
+    yield from elem.find_all("hpp")
 
 def format_hpp_text(format_str, args):
     try:
@@ -351,8 +363,38 @@ def apply_attribute_conditionals(soup, args, relpath):
             warn(f"Conditional attribute helper '{key}' has no matching -if in {relpath}")
             del elem[key]
 
-def inflate_hpp(soup, deps, templates, relpath):
-    for hpp in soup.find_all("hpp"):
+def collect_slots(hpp, relpath):
+    slots = {}
+    for slot in hpp.find_all("hpp-slot", recursive=False):
+        name = slot.get("name")
+        if name is None:
+            warn(f"Slot without a name in {relpath}, ignoring...")
+            continue
+        if name in slots:
+            warn(f"Duplicate slot named '{name}' in {relpath}, using the last one")
+        slots[name] = [copy.copy(content) for content in slot.contents]
+    return slots
+
+def has_hpp_ancestor(elem):
+    parent = elem.parent
+    while isinstance(parent, Tag):
+        if parent.name == "hpp":
+            return True
+        parent = parent.parent
+    return False
+
+def apply_slots(soup, slots):
+    for slot in [tag for tag in list(iter_tags(soup)) if tag.name == "hpp-slot" and not has_hpp_ancestor(tag)]:
+        name = slot.get("name")
+        if name in slots:
+            for content in slots[name]:
+                slot.insert_before(copy.copy(content))
+        slot.decompose()
+
+def inflate_hpp(soup, deps, templates, relpath, inherited_args=None):
+    for hpp in list(iter_hpp_tags(soup)):
+        if hpp.parent is None or hpp.attrs is None:
+            continue
         template_name = hpp.get("template")
         if template_name is None:
             warn(f"No template specified in {relpath}, ignoring...")
@@ -368,10 +410,12 @@ def inflate_hpp(soup, deps, templates, relpath):
         if template_name not in templates:
             warn(f"No template named '{template_name}' in {relpath}, ignoring...")
             continue
-        args = SafeFormatDict(hpp.attrs)
+        args = build_hpp_args(hpp, inherited_args)
+        slots = collect_slots(hpp, relpath)
 
         for ts in templates[template_name]:
             template_soup = copy.copy(ts)
+            apply_slots(template_soup, slots)
             apply_element_conditionals(template_soup, args, template_name)
             apply_attribute_conditionals(template_soup, args, template_name)
             for dynamic_text_elem in template_soup.find_all("hpp-text"):
@@ -402,7 +446,9 @@ def inflate_hpp(soup, deps, templates, relpath):
                     if new_value is not None:
                         dynamic_elem[key[len(prefix):]] = new_value
 
-            hpp.insert_before(inflate_hpp(template_soup, deps, templates, template_name))
+            template_fragment = BeautifulSoup("", "html.parser")
+            template_fragment.append(template_soup)
+            hpp.insert_before(inflate_hpp(template_fragment, deps, templates, template_name, args))
 
         hpp.decompose()
     return soup
