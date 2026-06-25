@@ -609,6 +609,7 @@ def main(args):
     parser.add_argument("--listen", default=False, action="store_true", help="If specified, stay alive & process files as they change")
     parser.add_argument("--clean", default=False, action="store_true", help="If specified, cleans the out directory before starting")
     parser.add_argument("--port", default=8000, type=int, help="Specify the port to listen to when --listen is specified")
+    parser.add_argument("--kqueue", default=False, action="store_true", help="Use kqueue instead of FSEvents when --listen is specified")
     parser.add_argument("--autoreload", default=False, action="store_true", help="Auto reload/navigate to the webpage that was last edited")
     parser.add_argument("--url-prefix", default="", help="Prefix root-relative HTML href/src/srcset URLs, e.g. /project for GitHub project Pages")
 
@@ -646,7 +647,10 @@ def main(args):
     if parsed_args.listen:
         from watchdog import events as wd_events
         from watchdog.events import FileSystemMovedEvent, DirDeletedEvent, FileDeletedEvent
-        from watchdog.observers.fsevents import FSEventsObserver as Observer
+        if parsed_args.kqueue:
+            from watchdog.observers.kqueue import KqueueObserver as Observer
+        else:
+            from watchdog.observers.fsevents import FSEventsObserver as Observer
 
         autoreloader = AutoReloader(parsed_args.autoreload, parsed_args.port, deps_map)
 
