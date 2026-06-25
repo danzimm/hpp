@@ -19,3 +19,22 @@ python3 hpp/hpp.py \
 ```
 
 By default, this also loads templates from each input directory's `hpp/` directory in the same order. Pass `--templates` explicitly when you want a different template overlay.
+
+## Conditionals
+
+Templates can keep or remove elements with simple conditionals:
+
+```html
+<p hpp-if="description">...</p>
+<p hpp-unless="compact">...</p>
+```
+
+Templates can also conditionally set attributes:
+
+```html
+<li hpp-class-if="key == current" hpp-class-then="selected">
+<a hpp-aria-current-if="key == current" hpp-aria-current-then="page">
+<img hpp-loading-if="eager" hpp-loading-then="eager" hpp-loading-else="lazy" />
+```
+
+The supported expression forms are `name`, `!name`, `name == name`, `name != name`, `name == "literal"`, and `name != "literal"`. Missing values, empty strings, `false`, `0`, and `no` are treated as false.

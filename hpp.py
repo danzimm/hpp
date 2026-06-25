@@ -3,6 +3,7 @@
 import argparse
 import copy
 import os
+import re
 import shutil
 import string
 import subprocess
@@ -203,6 +204,69 @@ def flatten_deps(key, deps, depset=None):
 def field_name_root(field_name):
     return field_name.split(".", 1)[0].split("[", 1)[0]
 
+def is_truthy(value):
+    if value is None:
+        return False
+    return str(value).strip().lower() not in ("", "false", "0", "no")
+
+def expression_value(token, args):
+    token = token.strip()
+    if (
+        (token.startswith('"') and token.endswith('"')) or
+        (token.startswith("'") and token.endswith("'"))
+    ):
+        return token[1:-1]
+    return args.get(token, "")
+
+def eval_hpp_expr(expr, args, relpath):
+    expr = expr.strip()
+    if not expr:
+        warn(f"Empty conditional expression in {relpath}, treating as false")
+        return False
+
+    if expr.startswith("!"):
+        name = expr[1:].strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
+            warn(f"Invalid conditional expression '{expr}' in {relpath}, treating as false")
+            return False
+        return not is_truthy(args.get(name, ""))
+
+    comparison = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_-]*|'[^']*'|\"[^\"]*\")\s*(==|!=)\s*([A-Za-z_][A-Za-z0-9_-]*|'[^']*'|\"[^\"]*\")",
+        expr,
+    )
+    if comparison is not None:
+        lhs, op, rhs = comparison.groups()
+        is_equal = expression_value(lhs, args) == expression_value(rhs, args)
+        return is_equal if op == "==" else not is_equal
+
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", expr):
+        return is_truthy(args.get(expr, ""))
+
+    warn(f"Invalid conditional expression '{expr}' in {relpath}, treating as false")
+    return False
+
+def format_hpp_value(value, args):
+    new_value = format_hpp_text(value, args)
+    return value if new_value is None else new_value
+
+def add_class(elem, class_name):
+    existing = elem.get("class", [])
+    if isinstance(existing, str):
+        classes = existing.split()
+    else:
+        classes = list(existing)
+    for part in class_name.split():
+        if part and part not in classes:
+            classes.append(part)
+    if classes:
+        elem["class"] = classes
+
+def iter_tags(elem):
+    if isinstance(elem, Tag):
+        yield elem
+    yield from elem.find_all(True)
+
 def format_hpp_text(format_str, args):
     try:
         parsed_format = list(string.Formatter().parse(format_str))
@@ -220,6 +284,72 @@ def format_hpp_text(format_str, args):
         arg_name = field_name_root(field_name)
         text_parts.append(args[arg_name] if arg_name in args else default_value)
     return "".join(text_parts)
+
+def apply_element_conditionals(soup, args, relpath):
+    for elem in [tag for tag in list(iter_tags(soup)) if "hpp-if" in tag.attrs]:
+        keep = eval_hpp_expr(elem["hpp-if"], args, relpath)
+        if "hpp-unless" in elem.attrs:
+            warn(f"Both hpp-if and hpp-unless specified in {relpath}")
+            keep = keep and not eval_hpp_expr(elem["hpp-unless"], args, relpath)
+        if not keep:
+            elem.decompose()
+        else:
+            del elem["hpp-if"]
+            if "hpp-unless" in elem.attrs:
+                del elem["hpp-unless"]
+
+    for elem in [tag for tag in list(iter_tags(soup)) if "hpp-unless" in tag.attrs]:
+        if eval_hpp_expr(elem["hpp-unless"], args, relpath):
+            elem.decompose()
+        else:
+            del elem["hpp-unless"]
+
+def apply_attribute_conditionals(soup, args, relpath):
+    prefix = "hpp-"
+    for elem in [tag for tag in iter_tags(soup) if any(k.startswith(prefix) for k in tag.attrs.keys())]:
+        attr_keys = list(elem.attrs.keys())
+        conditional_attrs = []
+        for key in attr_keys:
+            if not key.startswith(prefix) or not key.endswith("-if") or key == "hpp-if":
+                continue
+            attr_name = key[len(prefix):-len("-if")]
+            if not attr_name:
+                warn(f"Malformed conditional attribute '{key}' in {relpath}")
+                del elem[key]
+                continue
+            conditional_attrs.append((key, attr_name))
+
+        for if_key, attr_name in conditional_attrs:
+            then_key = f"{prefix}{attr_name}-then"
+            else_key = f"{prefix}{attr_name}-else"
+            condition = eval_hpp_expr(elem[if_key], args, relpath)
+            value = None
+            should_set = False
+            if condition:
+                should_set = True
+                if then_key in elem.attrs:
+                    value = format_hpp_value(elem[then_key], args)
+            elif else_key in elem.attrs:
+                should_set = True
+                value = format_hpp_value(elem[else_key], args)
+
+            if should_set:
+                if attr_name == "class" and value is not None:
+                    add_class(elem, value)
+                elif value is None:
+                    elem[attr_name] = ""
+                else:
+                    elem[attr_name] = value
+
+            del elem[if_key]
+            if then_key in elem.attrs:
+                del elem[then_key]
+            if else_key in elem.attrs:
+                del elem[else_key]
+
+        for key in [k for k in list(elem.attrs.keys()) if k.startswith(prefix) and (k.endswith("-then") or k.endswith("-else"))]:
+            warn(f"Conditional attribute helper '{key}' has no matching -if in {relpath}")
+            del elem[key]
 
 def inflate_hpp(soup, deps, templates, relpath):
     for hpp in soup.find_all("hpp"):
@@ -242,6 +372,8 @@ def inflate_hpp(soup, deps, templates, relpath):
 
         for ts in templates[template_name]:
             template_soup = copy.copy(ts)
+            apply_element_conditionals(template_soup, args, template_name)
+            apply_attribute_conditionals(template_soup, args, template_name)
             for dynamic_text_elem in template_soup.find_all("hpp-text"):
                 name = dynamic_text_elem.get("name")
                 if name in args:
@@ -250,7 +382,7 @@ def inflate_hpp(soup, deps, templates, relpath):
                 else:
                     dynamic_text_elem.decompose()
 
-            for dynamic_text_elem in template_soup.find_all(attrs={"hpp-text": True}):
+            for dynamic_text_elem in [tag for tag in iter_tags(template_soup) if "hpp-text" in tag.attrs]:
                 format_str = dynamic_text_elem.get("hpp-text")
                 del dynamic_text_elem["hpp-text"]
                 new_text = format_hpp_text(format_str, args)
@@ -258,7 +390,7 @@ def inflate_hpp(soup, deps, templates, relpath):
                     dynamic_text_elem.string = new_text
 
             prefix = "hpp-"
-            for dynamic_elem in template_soup.find_all(attr_has_prefix(prefix)):
+            for dynamic_elem in [tag for tag in iter_tags(template_soup) if any(k.startswith(prefix) for k in tag.attrs.keys())]:
                 for key in [k for k in dynamic_elem.attrs.keys() if k.startswith(prefix)]:
                     format_str = dynamic_elem[key]
                     del dynamic_elem[key]
